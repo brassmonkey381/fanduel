@@ -335,7 +335,7 @@ train <- train2
 
 # Feature Hashing Model ---------------------------------------------------
 b <- 2 ^ 10
-f <- ~ first_last + fd_sal + team + opp + h_a + time + overunder + margin + minutes + split(pool, delim = ",") + split(pool_day, delim = ",") - 1
+f <- ~ first_last + fd_sal + team + opp + h_a + time + overunder + margin + minutes + fd_pos + split(pool, delim = ",") + split(pool_day, delim = ",") - 1
 X_train <- hashed.model.matrix(f, train2, b)
 # X_train <- cBind(X_train, train %>% select(starts_with("last_10")) %>% as.matrix)
 # X_train <- cBind(X_train, train %>% select(starts_with("last_5")) %>% as.matrix)
@@ -378,32 +378,38 @@ m1 <- xgb.train(data = dmodel, param, nrounds = 2000,
 m1$bestScore
 
 set.seed(381)
-m2 <- xgb.cv(data = dtrain, param, nrounds = 200,
+m2 <- xgb.cv(data = dtrain, param, nrounds = m1$bestInd * 1.05,
                 watchlist = watch
-                , early.stop.round = 5000
+                # , early.stop.round = 200
              , nfold = 2
 )
 
-best_ix <- 0
-best_score <- 0
-for (i in 1:100){
-  result <- cbind(train[valid,], predict(m1, dvalid))
-  result$`predict(m1, dvalid)`[result$`predict(m1, dvalid)` >= i/100] <- 1
-  result$`predict(m1, dvalid)`[result$`predict(m1, dvalid)` < i/100] <- 0
-  score <- with(result, mcc(top_by_position_day,  `predict(m1, dvalid)`))
-  if(score >= best_score){
-    best_ix <- i
-    best_score <- score
-  }
-}
+# best_ix <- 0
+# best_score <- 0
+# for (i in 1:100){
+#   result <- cbind(train[valid,], predict(m1, dvalid))
+#   result$`predict(m1, dvalid)`[result$`predict(m1, dvalid)` >= i/100] <- 1
+#   result$`predict(m1, dvalid)`[result$`predict(m1, dvalid)` < i/100] <- 0
+#   score <- with(result, mcc(top_by_position_day,  `predict(m1, dvalid)`))
+#   if(score >= best_score){
+#     best_ix <- i
+#     best_score <- score
+#   }
+# }
 
+dvalid2 <- xgb.DMatrix(hashed.model.matrix(f, train2 %>% mutate(minutes = 28), b)[valid,] , label = Y[valid])
+r3 <- predict(m1, dvalid2)
 result <- cbind(train[valid,], predict(m1, dvalid))
 colnames(result)[ncol(result)] <- 'pred'
+result <- cbind(result, r3)
+colnames(result)[ncol(result)] <- 'pred28'
+
 # colnames(result)
 # result$`predict(m1, dvalid)`[result$`predict(m1, dvalid)` >= best_ix/100] <- 1
 # result$`predict(m1, dvalid)`[result$`predict(m1, dvalid)` < best_ix/100] <- 0
 
-result %>% select(first_last, date, multiplier, pred) %>% filter(date == "2017-01-06") %>% View
+result %>% select(first_last, date, multiplier, pred, pred28, team, minutes, fd_pos, fd_sal) %>% 
+  mutate(minutes=round(minutes, 2)) %>% filter(date == "2017-01-02") %>% arrange(fd_pos, -pred28) %>% View
 
 # sum(result[,37])
 # sum(result[,38])
@@ -412,7 +418,7 @@ result %>% select(first_last, date, multiplier, pred) %>% filter(date == "2017-0
 
 # Use Hash Model to Predict Today -----------------------------------------
 dtrain <- xgb.DMatrix(X_train, label = Y)
-m2 <- xgb.train(data = dtrain, param, nrounds = floor(m1$bestInd * 1.1))
+m2 <- xgb.train(data = dtrain, param, nrounds = floor(m1$bestInd * 1.05))
 
 test <- fread("today_FD_0112.csv")
 test$`First  Last` <- mapply(function(x,y) paste(x,y," "), test$`First Name`, test$`Last Name`)
@@ -434,7 +440,8 @@ test_results <- cbind(test, pred = pred)
 # Predicting Today (UPDATED DAILY) ----------------------------------------------
 url <- 'http://www.sportsbookreview.com/betting-odds/nba-basketball/merged/'
 dat <- read_html(url)
-text <- dat %>% html_nodes(".status-complete .el-div") %>% html_text
+# text <- dat %>% html_nodes(".status-complete .el-div") %>% html_text
+text <- dat %>% html_nodes(".status-scheduled .el-div") %>% html_text
 table <- data.frame(t(matrix(text, nrow = 17)))
 vegas <- clean_vegas(table)
 vegas$date <- lubridate::today()
@@ -525,7 +532,7 @@ X_test <- hashed.model.matrix(f, test, b)
 today_results <- cbind(test, predict(m1, X_test))
 colnames(today_results)[ncol(today_results)] <- "prediction"
 view <- today_results %>% select(first_last, prediction)
-view2 <- today_results %>% select(first_last, fd_pos, fd_sal, prediction, team, minutes) %>% arrange(fd_pos, -prediction)
+view2 <- today_results %>% select(first_last, fd_pos, prediction, fd_sal) %>% arrange(fd_pos, -prediction)
 
 # Feature Importance ------------------------------------------------------
 library(ggplot2)
@@ -544,7 +551,7 @@ ggplot(importance_matrix, aes(x = reorder(Feature, Frequence), Frequence, fill="
   theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
   theme(legend.position="none")
 
-# Predicting Yesterday (UPDATED) ----------------------------------------------
+# Predicting Yesterday (UPDATED/BROKEN) ----------------------------------------------
 url <- 'http://www.sportsbookreview.com/betting-odds/nba-basketball/?date=20170116'
 dat <- read_html(url)
 text <- dat %>% html_nodes(".el-div") %>% html_text
@@ -567,7 +574,6 @@ vegas$date <- lubridate::today()
 # today$first_last[today$first_last == "Larry Nance Jr."] <- "Larry Nance"
 # today$first_last[today$first_last == "John Lucas III"] <- "John Lucas"
 # today$first_last[today$first_last == "Juancho Hernangomez"] <- "Juan Hernangomez"
-
 
 yesterday <- fread("0116_guru.csv")
 colnames(yesterday) <- tolower(colnames(yesterday))
@@ -614,8 +620,9 @@ test2$opp.x <- NULL
 test2$opp.y <- NULL
 test2$opp <- " "
 
-X_test <- hashed.model.matrix(f, test2, b)
-yesterday_results <- cbind(test2, predict(m1, X_test))
+X_test <- hashed.model.matrix(f, test2 %>% mutate(minutes = 28), b)
+dtest <- xgb.DMatrix(X_test, label = Y[1:nrow(test2)])
+yesterday_results <- cbind(test2, predict(m2, dtest))
 colnames(yesterday_results)[ncol(yesterday_results)] <- "prediction"
 view <- yesterday_results %>% select(first_last, prediction, multiplier)
 view2 <- yesterday_results %>% select(first_last, fd_pos, fd_sal, prediction, multiplier) %>% arrange(fd_pos, -prediction)

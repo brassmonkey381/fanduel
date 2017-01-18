@@ -330,7 +330,7 @@ model <- 1:nrow(model)
 
 
 dmodel <- xgb.DMatrix(X_train[model,], label = Y[model])
-dvalid <- xgb.DMatrix(X_train[valid,], label = Y[valid])
+dvalid <- xgb.DMatrix(X_train[valid,])
 dtrain <- xgb.DMatrix(X_train, label = Y)
 watch  <- list(valid = dvalid, model = dmodel)
 
