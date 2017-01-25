@@ -74,17 +74,33 @@ for(v in 1:20){
     }
   }
 }
+Sys.time() - curr
 
+# Cast Lineups ------------------------------------------------------------
 final <- master_df %>%
   group_by(lineup_ID) %>%
   summarise(fd_sal = sum(fd_sal), proj_pts = sum(proj_pts),
             multiplier = proj_pts / fd_sal * 1000) %>%
-  filter(fd_sal <= 60000) %>%
+  # filter(fd_sal < 60000) %>%
   arrange(-proj_pts)
-final2 <- final %>% filter(fd_sal >= 55000)
-Sys.time() - curr
+final <- final[complete.cases(final),]
 
-write_csv(master_df %>% filter(lineup_ID == final$lineup_ID[1]), "best_team_20170107.csv")
+lineups <- master_df %>%
+  filter(lineup_ID %in% final$lineup_ID) %>%
+  select(first_last, fd_pos, lineup_ID) %>%
+  melt(id.vars = c("lineup_ID", 'fd_pos'))
+toStr <- function(x) {paste(x, collapse = ",")}
+lineups_casted <- lineups %>%
+  dcast(lineup_ID + variable ~ fd_pos, toStr)
+lineups_casted <- lineups_casted[,c('lineup_ID', 'PG', 'SG', 'SF', 'PF', 'C')]
+lineups_casted <- separate(data=lineups_casted, col=PG, sep = ",", c("PG","PG"))
+lineups_casted <- separate(data=lineups_casted, col=SG, sep = ",", c("SG","SG"))
+lineups_casted <- separate(data=lineups_casted, col=SF, sep = ",", c("SF","SF"))
+lineups_casted <- separate(data=lineups_casted, col=PF, sep = ",", c("PF","PF"))
+lineups_casted <- data.frame(apply(lineups_casted, 2, as.character))
+temp <- lineups_casted[1,]
+temp <- t(c("lineup_ID", "PG", "PG", "SG", "SG", "SF", "SF", "PF", "PF", "C"))
+colnames(temp) <- colnames(lineups_casted)
+lineups_casted <- rbind(temp, lineups_casted)
 
-finals <- master_df %>% filter(lineup_ID %in% final2$lineup_ID)
-players <- finals %>% group_by(first_last, fd_pos) %>% summarise(count = n()) %>% arrange(-count)
+# write_csv(lineups_casted[,-1], "top_lineups_0122.csv", col_names = F)
