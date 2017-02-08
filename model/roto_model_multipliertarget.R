@@ -1,4 +1,4 @@
-setwd("/Users/OxfordRoad/Desktop/Brians_Files/fanduel-master/New folder")
+setwd("F:/FANDUEL/NBA/model")
 library(rvest)
 library(tidyr)
 library(dplyr)
@@ -163,13 +163,13 @@ clean_vegas <- function(fin){
   
   y <- pfg %>%
     select(starts_with("a"))
-  z <- apply(y, 1, function(x) mean(x, na.rm=T))
+  z <- apply(y, 1, function(x) median(x, na.rm=T))
   xyz <- cbind(y,z)
   
   u <- pfg %>%
     select(starts_with("b"))
   u[u >= 30] <- NA
-  v <- apply(u, 1, function(x) mean(x, na.rm=T))
+  v <- apply(u, 1, function(x) median(x, na.rm=T))
   tuv <- cbind(u,v)
   odds <- data.frame(overunder = xyz$z, margin = tuv$v)
   
@@ -211,15 +211,89 @@ clean_vegas <- function(fin){
   colnames(x)[1] <- 'time'
   return(x)
 }
-# Predict a slate
-predict_slate <- function(date, type){
-  type = "main"
+# Train model
+train_model <- function(target){
+  b <- 2 ^ 12
+  if(target == "fdp"){
+    f <- ~first_last + fd_sal + team + opp + h_a + time + overunder + margin + start + gp + active + minutes + fd_pos + split(pool, delim = ",") + split(pool_day, delim = ",") - 1
+    X_train <- hashed.model.matrix(f, train2, b)
+  } else if(target == "minutes"){
+    f <- ~first_last + fd_sal + team + opp + h_a + time + overunder + margin + start + gp + active + fd_pos + split(pool, delim = ",") + split(pool_day, delim = ",") - 1
+    X_train <- hashed.model.matrix(f, train2, b)
+  } else if(target == "multiplier"){
+    f <- ~first_last + fd_sal + team + opp + h_a + time + overunder + margin + start + gp + active + minutes + fd_pos + split(pool, delim = ",") + split(pool_day, delim = ",") - 1
+    X_train <- hashed.model.matrix(f, train2, b)
+  } else{
+    
+  }
   
+  # Validate xgboost model
+  Y <- train2[,target]
+  # Y[Y <= 0] <- 0
+  
+  model <- 1:14500
+  valid <- (1:length(Y))[-model]
+  model <- train2 %>% filter(date <= "2017-01-01")
+  valid <- train2 %>% filter(date > "2017-01-01")
+  valid <- (nrow(model) + 1):(nrow(train2))
+  model <- 1:nrow(model)
+  
+  dmodel <- xgb.DMatrix(X_train[model,], label = Y[model])
+  dvalid <- xgb.DMatrix(X_train[valid,], label = Y[valid])
+  dtrain <- xgb.DMatrix(X_train, label = Y)
+  watch  <- list(valid = dvalid, model = dmodel)
+  
+  param <- list(objective = "reg:linear",
+                booster = "gbtree", eta = 0.1,
+                eval_metric = "rmse",
+                colsample_bytree = .7,
+                subsample = .7,
+                max_depth = 3
+  )
+  set.seed(381)
+  m1 <- xgb.train(data = dmodel, param, nrounds = 2000,
+                  watchlist = watch
+                  , early.stop.round = 200
+  )
+  return(m1)
+}
+# Predict a slate
+predict_slate <- function(model, date, target){
+  b <- 2 ^ 12
+  if(target == "fdp"){
+    f <- ~ first_last + fd_sal + team + opp + h_a + time + overunder + margin + start + gp + active + minutes + fd_pos + split(pool, delim = ",") + split(pool_day, delim = ",") - 1
+    X_train <- hashed.model.matrix(f, train2, b)
+  } else if(target == "minutes"){
+    f <- ~ first_last + fd_sal + team + opp + h_a + time + overunder + margin + start + gp + active + fd_pos + split(pool, delim = ",") + split(pool_day, delim = ",") - 1
+    X_train <- hashed.model.matrix(f, train2, b)
+  } else if(target == "multiplier"){
+    f <- ~ first_last + fd_sal + team + opp + h_a + time + overunder + margin + start + gp + active + minutes + fd_pos + split(pool, delim = ",") + split(pool_day, delim = ",") - 1
+    X_train <- hashed.model.matrix(f, train2, b)
+  } else{
+    
+  }
+  
+  # Validate xgboost model
+  Y <- train2[,target]
+  # Y[Y <= 0] <- 0
+
+  dtrain <- xgb.DMatrix(X_train, label = Y)
+
+  param <- list(objective = "reg:linear",
+                booster = "gbtree", eta = 0.1,
+                eval_metric = "rmse",
+                colsample_bytree = .7,
+                subsample = .7,
+                max_depth = 3
+  )
+  
+  train_model <- xgb.train(dtrain, params = param, nrounds = model$bestInd*1.05)
+  type = "main"
   if (ymd(date) == today()){
     url <- 'http://www.sportsbookreview.com/betting-odds/nba-basketball/merged/'
     dat <- read_html(url)
-    # text <- dat %>% html_nodes(".status-complete .el-div") %>% html_text
-    text <- dat %>% html_nodes(paste0("#byDateleagueData-", ymd(date), "+ .eventLines .el-div")) %>% html_text
+    text <- dat %>% html_nodes(".el-div") %>% html_text
+    # text <- dat %>% html_nodes(paste0("#byDateleagueData-", ymd(date), "+ .eventLines .el-div")) %>% html_text
   } else {
     url <- paste0('http://www.sportsbookreview.com/betting-odds/nba-basketball/merged/?date=', gsub("-", "", ymd(date)))
     dat <- read_html(url)
@@ -339,7 +413,7 @@ predict_slate <- function(date, type){
   test <- test2
   
   X_test <- hashed.model.matrix(f, test2, b)
-  today_results <- cbind(test, predict(m2, X_test))
+  today_results <- cbind(test, predict(train_model, X_test))
   colnames(today_results)[ncol(today_results)] <- "prediction"
   view <- today_results %>% select(first_last, prediction)
   view2 <- today_results %>% select(first_last, fd_pos, prediction, fd_sal) %>% arrange(fd_pos, -prediction)
@@ -365,10 +439,10 @@ predict_slate <- function(date, type){
   # f <- ~ first_last + fd_sal + minutes + team + opp + h_a + time + full_game_overunder + full_game_team_margin + full_game_opp_margin + q1_team_margin + q1_opp_margin + h1_team_margin + h1_opp_margin - 1 
   X_test <- hashed.model.matrix(f, test2, b)
   # m2 <- xgb.load('m2_with_minutes')
-  today_results <- cbind(test2, predict(m2, X_test))
+  today_results <- cbind(test2, predict(train_model, X_test))
   colnames(today_results)[ncol(today_results)] <- "prediction"
   view <- today_results %>% select(first_last, prediction)
-  view5 <- today_results %>% select(first_last, team, fd_pos, fd_sal, prediction, minutes) %>% mutate(rotofire_muliplier = prediction*1000/fd_sal) %>% arrange(fd_pos, -prediction)
+  view5 <- today_results %>% select(first_last, team, fd_pos, fd_sal, start, prediction, minutes) %>% mutate(rotofire_muliplier = prediction*1000/fd_sal) %>% arrange(fd_pos, -prediction)
   
   predict_df <- left_join(view5, view2 %>% 
                             select(first_last, fd_sal, prediction) %>% 
@@ -378,6 +452,139 @@ predict_slate <- function(date, type){
   
   
   return(predict_df)
+}
+# Predict a slate using predicted minutes to predict fdp
+predict_fdp_using_predicted_minutes <- function(model_minutes, model_fdp, date){
+  # PREDICT MINUTES
+  target <- "minutes"
+  f <- ~ first_last + fd_sal + team + opp + h_a + time + overunder + margin + start + gp + active + fd_pos + split(pool, delim = ",") + split(pool_day, delim = ",") - 1
+  X_train <- hashed.model.matrix(f, train2, b)
+  Y <- train2[,target]
+  dtrain <- xgb.DMatrix(X_train, label = Y)
+  
+  param <- list(objective = "reg:linear",
+                booster = "gbtree", eta = 0.1,
+                eval_metric = "rmse",
+                colsample_bytree = .7,
+                subsample = .7,
+                max_depth = 3
+  )
+  train_model <- xgb.train(dtrain, params = param, nrounds = model_minutes$bestInd*1.05)
+  type = "main"
+  if (ymd(date) == today()){
+    url <- 'http://www.sportsbookreview.com/betting-odds/nba-basketball/merged/'
+    dat <- read_html(url)
+    text <- dat %>% html_nodes(".el-div") %>% html_text
+    # text <- dat %>% html_nodes(paste0("#byDateleagueData-", ymd(date), "+ .eventLines .el-div")) %>% html_text
+  } else {
+    url <- paste0('http://www.sportsbookreview.com/betting-odds/nba-basketball/merged/?date=', gsub("-", "", ymd(date)))
+    dat <- read_html(url)
+    text <- dat %>% html_nodes(".el-div") %>% html_text
+  }
+  table <- data.frame(t(matrix(text, nrow = 17)))
+  vegas <- clean_vegas(table)
+  vegas$date <- ymd(date)
+  today <- fread(paste0(gsub("-", "", ymd(date)), ".csv"))
+  colnames(today) <- tolower(colnames(today))
+  colnames(today) <- gsub("\\s+", "_", colnames(today))
+  colnames(today)[11] <- "opp"
+  colnames(today)[8] <- "fd_sal"
+  colnames(today)[2] <- "fd_pos"
+  today$first_last <- paste0(today$first_name, " ", today$last_name)
+  today <- today %>% 
+    mutate(h_a = ifelse(substr(game,1,3) == team, "H", "A"))
+  unique(today$first_last)[!unique(today$first_last) %in% unique(train$first_last)]
+  today$first_last[today$first_last == "Wesley Matthews"] <- "Wes Matthews"
+  today$first_last[today$first_last == "J.J. Barea"] <- "Jose Barea"
+  today$first_last[today$first_last == "Lou Williams"] <- "Louis Williams"
+  today$first_last[today$first_last == "Larry Nance Jr."] <- "Larry Nance"
+  today$first_last[today$first_last == "John Lucas III"] <- "John Lucas"
+  today$first_last[today$first_last == "Juancho Hernangomez"] <- "Juan Hernangomez"
+  today$first_last[today$first_last == "Kyle O'Quinn"] <- "Kyle O'Quinn"
+  today$first_last[today$first_last == "D'Angelo Russell"] <- "D'Angelo Russell"
+  today$first_last[today$first_last =="Chasson Randle"]<-"Chasson Randle"
+  today$first_last[today$first_last =="DeAndre' Bembry"]<-"DeAndre Bembry"
+  today$first_last[today$first_last =="Donatas Motiejunas"]<-"Donatas Motiejunas"
+  today$first_last[today$first_last =="Edy Tavares"]<-"Edy Tavares"
+  today$first_last[today$first_last =="Ish Smith"]<-"Ishmael Smith"
+  today$first_last[today$first_last =="James Ennis III"]<-"James Ennis"
+  today$first_last[today$first_last =="Joe Young"]<-"Joseph Young"
+  today$first_last[today$first_last =="Jordan Farmar"]<-"Jordan Farmar"
+  today$first_last[today$first_last =="Kelly Oubre Jr."]<-"Kelly Oubre"
+  today$first_last[today$first_last =="Khris Middleton"]<-"Khris Middleton"
+  today$first_last[today$first_last =="Maurice Ndour"]<-"Maurice N'dour"
+  today$first_last[today$first_last =="Stephen Zimmerman Jr."]<-"Stephen Zimmerman"
+  today$first_last[today$first_last =="Timothe Luwawu-Cabarrot"]<-"Timothe Luwawu"
+  today$first_last[today$first_last =="Wade Baldwin IV"]<-"Wade Baldwin"
+  today$team <- tolower(today$team)
+  today$opp <- tolower(today$opp)
+  today$team <- gsub("sa$", "sas", today$team)
+  today$opp  <- gsub("sa$", "sas", today$opp)
+  today$team <- gsub("gs", "gsw", today$team)
+  today$opp  <- gsub("gs", "gsw", today$opp)
+  today$team <- gsub("no", "nor", today$team)
+  today$opp  <- gsub("no", "nor", today$opp)
+  today$team <- gsub("ny", "nyk", today$team)
+  today$opp  <- gsub("ny", "nyk", today$opp)
+  test <- left_join(today, vegas, by = c("team", "opp"))
+  test <- left_join(test, vegas, by = c("team" = "opp", "opp" = "team"))
+  test <- test %>%
+    mutate(time = ifelse(is.na(time.x), time.y, time.x),
+           overunder = ifelse(is.na(overunder.x), overunder.y, overunder.x),
+           margin = ifelse(is.na(margin.x), margin.y, margin.x)
+    )
+  test$time.x <- NULL
+  test$time.y <- NULL
+  test$margin.x <- NULL
+  test$margin.y <- NULL
+  test$overunder.x <- NULL
+  test$overunder.y <- NULL
+  test$date.x <- NULL
+  test$date.y <- NULL
+  toStr <- function(x) {paste(x, collapse = ",")}
+  daily_test_info <- test %>%
+    group_by(fd_pos) %>%
+    summarise(pool = toStr(first_last)) %>%
+    mutate(pool_day = toStr(pool))
+  test <- left_join(test, daily_test_info)
+  test2 <- test
+  test2$start = 0
+  test2$active = 1
+  test2$gp = 1
+  url <- "http://www.rotowire.com/basketball/nba_lineups.htm"
+  dat <- read_html(url)
+  starters <- dat %>% html_nodes(".dlineups-pos+ div a") %>% html_text()
+  injuries <- dat %>% html_nodes(".equalheight a") %>% html_text()
+  test2$start[test2$first_last %in% starters] <- 1
+  test2$active[test2$first_last %in% injuries] <- 0
+  test2$gp[test2$first_last %in% injuries] <- 0
+  test2$fd_sal <- as.numeric(test2$fd_sal)
+  X_test <- hashed.model.matrix(f, test2, b)
+  today_results <- cbind(test2, predict(train_model, X_test))
+  colnames(today_results)[ncol(today_results)] <- "prediction"
+  view_minutes <- today_results %>% select(first_last, prediction)
+  # END PREDICT MINUTES
+  
+  # PREDICT FDP
+  target <- "fdp"
+  f <- ~ first_last + fd_sal + team + opp + h_a + time + overunder + margin + start + gp + active + minutes + fd_pos + split(pool, delim = ",") + split(pool_day, delim = ",") - 1
+  X_train <- hashed.model.matrix(f, train2, b)
+  Y <- train2[,target]
+  dtrain <- xgb.DMatrix(X_train, label = Y)
+  
+  param <- list(objective = "reg:linear",
+                booster = "gbtree", eta = 0.1,
+                eval_metric = "rmse",
+                colsample_bytree = .7,
+                subsample = .7,
+                max_depth = 3
+  )
+  train_model <- xgb.train(dtrain, params = param, nrounds = model_fdp$bestInd*1.05)
+  test2$minutes <- view_minutes$prediction
+  X_test <- hashed.model.matrix(f, test2, b)
+  final_results <- cbind(test2, predict(train_model, X_test))
+  colnames(final_results)[ncol(final_results)] <- "prediction"
+  return(final_results)
 }
 
 # Load Data ---------------------------------------------------------------
@@ -458,475 +665,24 @@ train2$overunder.y <- NULL
 train <- train2
 train2 <- train
 
+past_5 <- train2 %>%
+  arrange(desc(date)) %>%
+  group_by(first_last) %>%
+  top_n(5, date) %>%
+  summarise(median_5 = median(minutes), max_5 = max(minutes), last_1 = minutes[date == max(date)])
+train2 <- left_join(train2, past_5)
+
 # Feature Hashing Model ---------------------------------------------------
-b <- 2 ^ 12
-f <- ~ first_last + fd_sal + team + opp + h_a + time + overunder + margin + start + gp + active + minutes + fd_pos + split(pool, delim = ",") + split(pool_day, delim = ",") - 1
-X_train <- hashed.model.matrix(f, train2, b)
-
-# Validate xgboost model
-Y <- train2$fdp
-# Y[Y <= 0] <- 0
-
-model <- 1:14500
-valid <- (1:length(Y))[-model]
-model <- train2 %>% filter(date <= "2017-01-01")
-valid <- train2 %>% filter(date > "2017-01-01")
-valid <- (nrow(model) + 1):(nrow(train2))
-model <- 1:nrow(model)
-
-dmodel <- xgb.DMatrix(X_train[model,], label = Y[model])
-dvalid <- xgb.DMatrix(X_train[valid,], label = Y[valid])
-dtrain <- xgb.DMatrix(X_train, label = Y)
-watch  <- list(valid = dvalid, model = dmodel)
-
-param <- list(objective = "reg:linear",
-              booster = "gbtree", eta = 0.1,
-              eval_metric = "rmse",
-              colsample_bytree = .7,
-              subsample = .7,
-              max_depth = 3
-)
-set.seed(381)
-m1 <- xgb.train(data = dmodel, param, nrounds = 2000,
-                watchlist = watch
-                , early.stop.round = 200
-)
-m1$bestScore
-
-dvalid2 <- xgb.DMatrix(hashed.model.matrix(f, train2 %>% mutate(minutes = 28), b)[valid,] , label = Y[valid])
-r3 <- predict(m1, dvalid2)
-result <- cbind(train[valid,], predict(m1, dvalid))
-colnames(result)[ncol(result)] <- 'pred'
-result <- cbind(result, r3)
-colnames(result)[ncol(result)] <- 'pred28'
-
-valid_result <- result %>% select(first_last, date, multiplier, pred, pred28, team, minutes, fd_pos, fd_sal) %>% 
-  mutate(minutes=round(minutes, 2)) %>% filter(date == "2017-01-02") %>% arrange(fd_pos, -pred28)
-
-# Use Hash Model to Predict Today -----------------------------------------
-dtrain <- xgb.DMatrix(X_train, label = Y)
-m2 <- xgb.train(data = dtrain, param, nrounds = floor(m1$bestInd * 1.05))
-
-today <- fread("/Users/OxfordRoad/Desktop/Brians_Files/fanduel-master/New folder/0204.csv") # Download live from fanduel!!
-colnames(today) <- tolower(colnames(today))
-colnames(today) <- gsub("\\s+", "_", colnames(today))
-colnames(today)[11] <- "opp"
-colnames(today)[8] <- "fd_sal"
-colnames(today)[2] <- "fd_pos"
-today$first_last <- paste0(today$first_name, " ", today$last_name)
-today <- today %>% 
-  mutate(h_a = ifelse(substr(game,1,3) == team, "H", "A"))
-
-# unique(today$first_last)[!unique(today$first_last) %in% unique(train$first_last)]
-
-## Map some names
-today$first_last[today$first_last == "Wesley Matthews"] <- "Wes Matthews"
-today$first_last[today$first_last == "J.J. Barea"] <- "Jose Barea"
-today$first_last[today$first_last == "Lou Williams"] <- "Louis Williams"
-today$first_last[today$first_last == "Larry Nance Jr."] <- "Larry Nance"
-today$first_last[today$first_last == "John Lucas III"] <- "John Lucas"
-today$first_last[today$first_last == "Juancho Hernangomez"] <- "Juan Hernangomez"
-#
-today$first_last[today$first_last =="Chasson Randle"]<-"Chasson Randle"
-today$first_last[today$first_last =="DeAndre' Bembry"]<-"DeAndre Bembry"
-today$first_last[today$first_last =="Donatas Motiejunas"]<-"Donatas Motiejunas"
-today$first_last[today$first_last =="Edy Tavares"]<-"Edy Tavares"
-today$first_last[today$first_last =="Ish Smith"]<-"Ishmael Smith"
-today$first_last[today$first_last =="James Ennis III"]<-"James Ennis"
-today$first_last[today$first_last =="Joe Young"]<-"Joseph Young"
-today$first_last[today$first_last =="Jordan Farmar"]<-"Jordan Farmar"
-today$first_last[today$first_last =="Kelly Oubre Jr."]<-"Kelly Oubre"
-today$first_last[today$first_last =="Khris Middleton"]<-"Khris Middleton"
-today$first_last[today$first_last =="Maurice Ndour"]<-"Maurice N'dour"
-today$first_last[today$first_last =="Stephen Zimmerman Jr."]<-"Stephen Zimmerman"
-today$first_last[today$first_last =="Timothe Luwawu-Cabarrot"]<-"Timothe Luwawu"
-today$first_last[today$first_last =="Wade Baldwin IV"]<-"Wade Baldwin"
-
-daily_test_info <- today %>%
-  group_by(fd_pos) %>%
-  summarise(pool = toStr(first_last)) %>%
-  mutate(pool_day = toStr(pool))
-
-today$team <- tolower(today$team)
-today$opp <- tolower(today$opp)
-today$team <- gsub("^sa$", "sas", today$team)
-today$opp  <- gsub("^sa$", "sas", today$opp)
-today$team <- gsub("gs", "gsw", today$team)
-today$opp  <- gsub("gs", "gsw", today$opp)
-today$team <- gsub("no", "nor", today$team)
-today$opp  <- gsub("no", "nor", today$opp)
-today$team <- gsub("ny", "nyk", today$team)
-today$opp  <- gsub("ny", "nyk", today$opp)
-
-
-url <- ("http://www.sportsbookreview.com/betting-odds/nba-basketball/merged/")
-dat <- read_html(url)
-text <- dat %>% html_nodes("#byDateleagueData-2017-02-04+ .eventLines .el-div") %>% html_text
-vegas <- data.frame(t(matrix(text, nrow = 17)))
-vegas$date <- ymd(today())
-vegas <- clean_vegas(vegas)
-
-test <- left_join(today, vegas, by = c("team", "opp"))
-test <- left_join(test, vegas, by = c("team" = "opp", "opp" = "team"))
-
-test <- test %>%
-  mutate(time = ifelse(is.na(time.x), time.y, time.x),
-         overunder = ifelse(is.na(overunder.x), overunder.y, overunder.x),
-         margin = ifelse(is.na(margin.x), margin.y, margin.x))
-test$time.x <- NULL
-test$time.y <- NULL
-test$margin.x <- NULL
-test$margin.y <- NULL
-test$overunder.x <- NULL
-test$overunder.y <- NULL
-
-test$active <- 1
-test$gp <- 1
-test$start <- 1
-test$minutes <- 28
-
-test <- left_join(test, daily_test_info)
-
-X_test <- hashed.model.matrix(f, test, b)
-pred <- predict(m2, X_test)
-
-test_results <- cbind(test, pred = pred)
+m1 <- train_model("minutes")
+m2 <- train_model("fdp")
+# m3 <- train_model("multiplier")
 
 # Predicting Today (UPDATED DAILY) ----------------------------------------------
-url <- 'http://www.sportsbookreview.com/betting-odds/nba-basketball/merged/'
-dat <- read_html(url)
-# text <- dat %>% html_nodes(".status-complete .el-div") %>% html_text
-text <- dat %>% html_nodes("#byDateleagueData-2017-02-03+ .eventLines .el-div") %>% html_text
-table <- data.frame(t(matrix(text, nrow = 17)))
-vegas <- clean_vegas(table)
-vegas$date <- lubridate::today()
-# vegas$opp[4] <- "bos"
-# vegas$overunder[4] <- 208
-# vegas$margin[4] <- -4
-# vegas$overunder[5] <- 199
-# vegas$margin[5] <- -7
-# vegas$overunder[6] <- 200
-# vegas$margin[6] <- -2.5
-  
-# write_csv(vegas, "vegas_0118.csv")
-# vegas <- fread('vegas_0118.csv', stringsAsFactors = F)
-# today <- fread("0118.csv") # Download live from fanduel!!
-today <- fread("0203.csv")
-colnames(today) <- tolower(colnames(today))
-colnames(today) <- gsub("\\s+", "_", colnames(today))
-colnames(today)[11] <- "opp"
-colnames(today)[8] <- "fd_sal"
-colnames(today)[2] <- "fd_pos"
-today$first_last <- paste0(today$first_name, " ", today$last_name)
-today <- today %>% 
-  mutate(h_a = ifelse(substr(game,1,3) == team, "H", "A"))
+b <- 2^12
+# predict_df <- predict_slate(m1, today()+1, "minutes")
+# predict_df2 <- predict_slate(m2, today()+1, "fdp")
 
-unique(today$first_last)[!unique(today$first_last) %in% unique(train$first_last)]
-
-## Map some names
-today$first_last[today$first_last == "Wesley Matthews"] <- "Wes Matthews"
-today$first_last[today$first_last == "J.J. Barea"] <- "Jose Barea"
-today$first_last[today$first_last == "Lou Williams"] <- "Louis Williams"
-today$first_last[today$first_last == "Larry Nance Jr."] <- "Larry Nance"
-today$first_last[today$first_last == "John Lucas III"] <- "John Lucas"
-today$first_last[today$first_last == "Juancho Hernangomez"] <- "Juan Hernangomez"
-today$first_last[today$first_last == "Kyle O'Quinn"] <- "Kyle O'Quinn"
-today$first_last[today$first_last == "D'Angelo Russell"] <- "D'Angelo Russell"
-#
-today$first_last[today$first_last =="Chasson Randle"]<-"Chasson Randle"
-today$first_last[today$first_last =="DeAndre' Bembry"]<-"DeAndre Bembry"
-today$first_last[today$first_last =="Donatas Motiejunas"]<-"Donatas Motiejunas"
-today$first_last[today$first_last =="Edy Tavares"]<-"Edy Tavares"
-today$first_last[today$first_last =="Ish Smith"]<-"Ishmael Smith"
-today$first_last[today$first_last =="James Ennis III"]<-"James Ennis"
-today$first_last[today$first_last =="Joe Young"]<-"Joseph Young"
-today$first_last[today$first_last =="Jordan Farmar"]<-"Jordan Farmar"
-today$first_last[today$first_last =="Kelly Oubre Jr."]<-"Kelly Oubre"
-today$first_last[today$first_last =="Khris Middleton"]<-"Khris Middleton"
-today$first_last[today$first_last =="Maurice Ndour"]<-"Maurice N'dour"
-today$first_last[today$first_last =="Stephen Zimmerman Jr."]<-"Stephen Zimmerman"
-today$first_last[today$first_last =="Timothe Luwawu-Cabarrot"]<-"Timothe Luwawu"
-today$first_last[today$first_last =="Wade Baldwin IV"]<-"Wade Baldwin"
-
-# daily_test_info <- today %>%
-#   group_by(fd_pos) %>%
-#   summarise(pool = toStr(first_last)) %>%
-#   mutate(pool_day = toStr(pool))
-
-today$team <- tolower(today$team)
-today$opp <- tolower(today$opp)
-today$team <- gsub("sa$", "sas", today$team)
-today$opp  <- gsub("sa$", "sas", today$opp)
-today$team <- gsub("gs", "gsw", today$team)
-today$opp  <- gsub("gs", "gsw", today$opp)
-today$team <- gsub("no", "nor", today$team)
-today$opp  <- gsub("no", "nor", today$opp)
-today$team <- gsub("ny", "nyk", today$team)
-today$opp  <- gsub("ny", "nyk", today$opp)
-
-# test <- left_join(today, daily_test_info)
-test <- left_join(today, vegas, by = c("team", "opp"))
-test <- left_join(test, vegas, by = c("team" = "opp", "opp" = "team"))
-test <- test %>%
-  mutate(time = ifelse(is.na(time.x), time.y, time.x),
-         overunder = ifelse(is.na(overunder.x), overunder.y, overunder.x),
-         margin = ifelse(is.na(margin.x), margin.y, margin.x)
-         # ,
-         # date = ifelse(is.na(date.x), date.y, date.x)
-         )
-test$time.x <- NULL
-test$time.y <- NULL
-test$margin.x <- NULL
-test$margin.y <- NULL
-test$overunder.x <- NULL
-test$overunder.y <- NULL
-test$date.x <- NULL
-test$date.y <- NULL
-
-test$minutes <- 28
-
-toStr <- function(x) {paste(x, collapse = ",")}
-daily_test_info <- test %>%
-  group_by(fd_pos) %>%
-  summarise(pool = toStr(first_last)) %>%
-  mutate(pool_day = toStr(pool))
-test <- left_join(test, daily_test_info)
-
-test2 <- test
-test2$start = 1
-test2$active = 1
-test2$gp = 1
-test2$active[test2$first_last %in% c("Nikola Jokic",
-                                     "DeMar DeRozan",
-                                     "Chris Paul",
-                                     "Joel Embiid",
-                                     "Kevin Love",
-                                     "Avery Bradley",
-                                     "Robert Covington",
-                                     "Jeremy Lin",
-                                     "Deron Williams",
-                                     "Enes Kanter",
-                                     "Josh Richardson",
-                                     "Ben Simmons",
-                                     "Derrick Favors",
-                                     "J.J. Barea",
-                                     "Khris Middleton",
-                                     "Zaza Pachulia",
-                                     "Andrew Bogut",
-                                     "Jodie Meeks",
-                                     "Brice Johnson",
-                                     "Tiago Splitter",
-                                     "J.R. Smith",
-                                     "Chris Andersen",
-                                     "David West",
-                                     "Lance Thomas",
-                                     "Kenneth Faried",
-                                     "Kristaps Porzingis",
-                                     "Derrick Rose",
-                                     "Wilson Chandler",
-                                     "Cody Zeller",
-                                     "Emmanuel Mudiay",
-                                     "Will Barton",
-                                     "Rodney Stuckey",
-                                     "Thabo Sefolosha",
-                                     "C.J. Wilcox",
-                                     "Dragan Bender",
-                                     "Dante Cunningham",
-                                     "Alex Abrines",
-                                     "Rakeem Christmas",
-                                     "Joe Harris")] <- 0
-test2$gp[test2$first_last %in% c("Nikola Jokic",
-                                 "DeMar DeRozan",
-                                 "Chris Paul",
-                                 "Joel Embiid",
-                                 "Kevin Love",
-                                 "Avery Bradley",
-                                 "Robert Covington",
-                                 "Jeremy Lin",
-                                 "Deron Williams",
-                                 "Enes Kanter",
-                                 "Josh Richardson",
-                                 "Ben Simmons",
-                                 "Derrick Favors",
-                                 "J.J. Barea",
-                                 "Khris Middleton",
-                                 "Zaza Pachulia",
-                                 "Andrew Bogut",
-                                 "Jodie Meeks",
-                                 "Brice Johnson",
-                                 "Tiago Splitter",
-                                 "J.R. Smith",
-                                 "Chris Andersen",
-                                 "David West",
-                                 "Lance Thomas",
-                                 "Kenneth Faried",
-                                 "Kristaps Porzingis",
-                                 "Derrick Rose",
-                                 "Wilson Chandler",
-                                 "Cody Zeller",
-                                 "Emmanuel Mudiay",
-                                 "Will Barton",
-                                 "Rodney Stuckey",
-                                 "Thabo Sefolosha",
-                                 "C.J. Wilcox",
-                                 "Dragan Bender",
-                                 "Dante Cunningham",
-                                 "Alex Abrines",
-                                 "Rakeem Christmas",
-                                 "Joe Harris")] <- 0
-test2$start[test2$first_last %in% c("Jeff Teague",
-                                    "C.J. Miles",
-                                    "Paul George",
-                                    "Thaddeus Young",
-                                    "Myles Turner",
-                                    "Elfrid Payton",
-                                    "Evan Fournier",
-                                    "Aaron Gordon",
-                                    "Serge Ibaka",
-                                    "Nikola Vucevic",
-                                    "Ricky Rubio",
-                                    "Zach LaVine",
-                                    "Andrew Wiggins",
-                                    "Gorgui Dieng",
-                                    "Karl-Anthony Towns",
-                                    "Kyrie Irving",
-                                    "Iman Shumpert",
-                                    "LeBron James",
-                                    "Channing Frye",
-                                    "Tristan Thompson",
-                                    "Kyle Lowry",
-                                    "Norman Powell",
-                                    "DeMarre Carroll",
-                                    "Patrick Patterson",
-                                    "Jonas Valanciunas",
-                                    "Isaiah Thomas",
-                                    "Jaylen Brown",
-                                    "Jae Crowder",
-                                    "Amir Johnson",
-                                    "Al Horford",
-                                    "Jrue Holiday",
-                                    "Buddy Hield",
-                                    "Solomon Hill",
-                                    "Terrence Jones",
-                                    "Anthony Davis",
-                                    "Reggie Jackson",
-                                    "K. Caldwell-Pope",
-                                    "Marcus Morris",
-                                    "Jon Leuer",
-                                    "Andre Drummond",
-                                    "Brandon Jennings",
-                                    "Courtney Lee",
-                                    "Carmelo Anthony",
-                                    "K. Porzingis",
-                                    "Joakim Noah",
-                                    "Isaiah Whitehead",
-                                    "Randy Foye",
-                                    "Bojan Bogdanovic",
-                                    "R. Hollis-Jefferson",
-                                    "Brook Lopez",
-                                    "Dennis Schroder",
-                                    "Tim Hardaway",
-                                    "Kent Bazemore",
-                                    "Paul Millsap",
-                                    "Dwight Howard",
-                                    "Goran Dragic",
-                                    "Rodney McGruder",
-                                    "Dion Waiters",
-                                    "Luke Babbitt",
-                                    "Hassan Whiteside",
-                                    "T.J. McConnell",
-                                    "Nik Stauskas",
-                                    "T. Luwawu-Cabarrot",
-                                    "Ersan Ilyasova",
-                                    "Jahlil Okafor",
-                                    "Yogi Ferrell",
-                                    "Seth Curry",
-                                    "Wesley Matthews",
-                                    "Harrison Barnes",
-                                    "Dirk Nowitzki",
-                                    "Mike Conley",
-                                    "Tony Allen",
-                                    "Chandler Parsons",
-                                    "JaMychal Green",
-                                    "Marc Gasol",
-                                    "Jameer Nelson",
-                                    "Gary Harris",
-                                    "Danilo Gallinari",
-                                    "K. Faried",
-                                    "Jusuf Nurkic",
-                                    "G. Antetokounmpo",
-                                    "M. Dellavedova",
-                                    "Tony Snell",
-                                    "Jabari Parker",
-                                    "Thon Maker",
-                                    "George Hill",
-                                    "Rodney Hood",
-                                    "Gordon Hayward",
-                                    "Trey Lyles",
-                                    "Rudy Gobert",
-                                    "Austin Rivers",
-                                    "J.J. Redick",
-                                    "Luc Mbah a Moute",
-                                    "Blake Griffin",
-                                    "DeAndre Jordan",
-                                    "Eric Bledsoe",
-                                    "Devin Booker",
-                                    "T.J. Warren",
-                                    "Marquese Chriss",
-                                    "Tyson Chandler",
-                                    "Jerian Grant",
-                                    "Dwyane Wade",
-                                    "Jimmy Butler",
-                                    "Taj Gibson",
-                                    "Robin Lopez",
-                                    "Russell Westbrook",
-                                    "Victor Oladipo",
-                                    "Andre Roberson",
-                                    "Domantas Sabonis",
-                                    "Steven Adams",
-                                    "Kemba Walker",
-                                    "Nicolas Batum",
-                                    "M. Kidd-Gilchrist",
-                                    "Marvin Williams",
-                                    "Roy Hibbert",
-                                    "Stephen Curry",
-                                    "Klay Thompson",
-                                    "Kevin Durant",
-                                    "Draymond Green",
-                                    "JaVale McGee")] <- 1
-
-test2$fd_sal <- as.numeric(test2$fd_sal)
-test <- test2
-
-X_test <- hashed.model.matrix(f, test2, b)
-today_results <- cbind(test, predict(m2, X_test))
-colnames(today_results)[ncol(today_results)] <- "prediction"
-view <- today_results %>% select(first_last, prediction)
-view2 <- today_results %>% select(first_last, fd_pos, prediction, fd_sal) %>% arrange(fd_pos, -prediction)
-
-# With rotofire or whatever minutes ---------------------------------------
-url <- "https://www.numberfire.com/nba/daily-fantasy/daily-basketball-projections"
-dat <- read_html(url)
-minutes <- dat %>% html_nodes("table")
-stats <- minutes[[4]] %>% html_table()
-colnames(stats) <- stats[1,]
-stats <- stats[-1,]
-names <- dat %>% html_nodes(".full") %>% html_text()
-names <- gsub("\\n\\s+", "", names)
-names <- gsub("\\s+$", "", names)
-proj_minutes <- cbind(names, stats)
-
-test2 <- left_join(test, proj_minutes, by=c("first_last" = "names"))
-test2$minutes <- as.numeric(test2$Min)
-test2$minutes[is.na(test2$minutes)] <- 0
-test2$minutes <- test2$minutes * .75
-
-b <- 2 ^ 12
-# f <- ~ first_last + fd_sal + minutes + team + opp + h_a + time + full_game_overunder + full_game_team_margin + full_game_opp_margin + q1_team_margin + q1_opp_margin + h1_team_margin + h1_opp_margin - 1 
-X_test <- hashed.model.matrix(f, test2, b)
-# m2 <- xgb.load('m2_with_minutes')
-today_results <- cbind(test2, predict(m2, X_test))
-colnames(today_results)[ncol(today_results)] <- "prediction"
-view <- today_results %>% select(first_last, prediction)
-view5 <- today_results %>% select(first_last, team, fd_pos, fd_sal, prediction, minutes) %>% mutate(proj_pts = fd_sal*prediction/1000) %>% arrange(fd_pos, -prediction)
-write_csv(view5, 'results_with_minutes_0201_numberfire.csv')
+x <- predict_fdp_using_predicted_minutes(m1, m2, today()+1)
+y <- x %>% select(first_last, team, injury_indicator, overunder, margin, fd_pos, fd_sal, minutes, prediction) %>%
+  mutate(multiplier = prediction / fd_sal * 1000) %>% 
+  arrange(fd_pos, desc(multiplier)) %>% filter(fd_sal != 3500)
